@@ -1,18 +1,131 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../app_theme.dart';
 import '../models/tasks.dart';
 import '../provider.dart';
+import 'add_task_dialog.dart';
 
-class TaskListItem extends StatelessWidget {
+// Keep the recovery action independent of the deleted row's lifecycle.
+void _offerRestore(
+  ScaffoldMessengerState messenger,
+  TaskProvider provider,
+  DeletedTask deleted, {
+  String? error,
+}) {
+  if (!messenger.mounted) return;
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(error ?? 'Задача «${deleted.task.title}» удалена'),
+      duration: const Duration(seconds: 8),
+      persist: error != null,
+      showCloseIcon: error != null,
+      action: SnackBarAction(
+        label: error == null ? 'Отменить' : 'Повторить',
+        onPressed: () async {
+          try {
+            await provider.restoreTask(deleted);
+          } on TaskException catch (error) {
+            _offerRestore(messenger, provider, deleted, error: error.message);
+          }
+        },
+      ),
+    ),
+  );
+}
+
+class TaskListItem extends StatefulWidget {
   const TaskListItem({super.key, required this.task});
-
   final Task task;
 
   @override
+  State<TaskListItem> createState() => _TaskListItemState();
+}
+
+class _TaskListItemState extends State<TaskListItem> {
+  bool _busy = false;
+
+  Future<void> _toggle() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await context.read<TaskProvider>().toggleTask(widget.task);
+    } on TaskException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    if (_busy) return;
+    final provider = context.read<TaskProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final deleted = await provider.deleteTask(widget.task);
+      // The list item may be disposed after the committed deletion.
+      _offerRestore(messenger, provider, deleted);
+    } on TaskException catch (error) {
+      if (messenger.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _menu(Task task) => PopupMenuButton<String>(
+    enabled: !_busy,
+    tooltip: 'Действия с задачей',
+    iconSize: 20,
+    padding: EdgeInsets.zero,
+    onSelected: (action) async {
+      if (action == 'delete') {
+        await _delete();
+      } else if (action == 'toggle') {
+        await _toggle();
+      } else if (mounted) {
+        await openAddTaskDialog(
+          context: context,
+          selectedDate: task.date,
+          task: task,
+        );
+      }
+    },
+    itemBuilder: (_) => [
+      PopupMenuItem(
+        value: 'toggle',
+        child: Text(
+          task.isDone ? 'Отметить невыполненной' : 'Отметить выполненной',
+        ),
+      ),
+      const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
+      const PopupMenuItem(
+        value: 'delete',
+        child: Text('Удалить', style: TextStyle(color: Color(0xFFB3261E))),
+      ),
+    ],
+  );
+
+  @override
   Widget build(BuildContext context) {
+    final task = widget.task;
     return Dismissible(
-      key: ValueKey(task.key),
-      direction: DismissDirection.horizontal,
+      key: ValueKey(context.read<TaskProvider>().keyForTask(task)),
+      // Return false because removal is controlled by the committed storage write.
+      // This also keeps a failed deletion on screen.
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          await _toggle();
+        } else {
+          await _delete();
+        }
+        return false;
+      },
       background: Container(
         margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -33,100 +146,94 @@ class TaskListItem extends StatelessWidget {
         ),
         child: const Icon(Icons.delete_outline, color: Colors.white),
       ),
-      confirmDismiss: (direction) async {
-        if (direction == DismissDirection.startToEnd) {
-          context.read<TaskProvider>().toggleTask(task);
-          return false;
-        }
-
-        return await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: const Text("Delete task?"),
-            content: Text("Delete \"${task.title}\"?"),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text("Cancel"),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text(
-                  "Delete",
-                  style: TextStyle(color: Colors.red),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-      onDismissed: (direction) {
-        final title = task.title;
-        context.read<TaskProvider>().deleteTask(task);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("\"$title\" deleted")),
-        );
-      },
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        padding: const EdgeInsets.all(15),
+      child: AnimatedContainer(
+        duration: motionDuration(context),
+        curve: Curves.easeOutCubic,
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(15),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black12,
-              blurRadius: 5,
-              offset: const Offset(0, 2),
-            ),
-          ],
+          color: task.isDone ? appSurface : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: appBorder),
+          boxShadow: task.isDone
+              ? []
+              : const [
+                  BoxShadow(
+                    color: Color(0x06000000),
+                    blurRadius: 12,
+                    offset: Offset(0, 3),
+                  ),
+                ],
         ),
-        child: Row(
-          children: [
-            Checkbox(
-              checkColor: Color(0xFF4143D1),
-              fillColor: WidgetStateProperty.all(Colors.white),
-              side: WidgetStateBorderSide.resolveWith((states){
-                if (states.contains(MaterialState.selected)) {
-                  return const BorderSide(color: Color(0xFF4143D1));
-                }
-                return const BorderSide(color: Colors.black);
-              }),
-              value: task.isDone,
-              onChanged: (value) {
-                context.read<TaskProvider>().toggleTask(task);
-              },
-            ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: _busy
+                ? null
+                : () => openAddTaskDialog(
+                    context: context,
+                    selectedDate: task.date,
+                    task: task,
+                  ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(4, 12, 4, 12),
+              child: Row(
                 children: [
-                  Text(
-                    task.title,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                      decoration: task.isDone
-                          ? TextDecoration.lineThrough
-                          : TextDecoration.none,
+                  Checkbox(
+                    semanticLabel: task.isDone
+                        ? 'Отметить невыполненной'
+                        : 'Отметить выполненной',
+                    value: task.isDone,
+                    activeColor: appPrimary,
+                    checkColor: Colors.white,
+                    onChanged: _busy ? null : (_) => _toggle(),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AnimatedDefaultTextStyle(
+                          duration: motionDuration(context),
+                          style: Theme.of(context).textTheme.bodyLarge!
+                              .copyWith(
+                                fontSize: 16,
+                                height: 1.4,
+                                fontWeight: FontWeight.w600,
+                                color: task.isDone ? appMuted : appInk,
+                                decoration: task.isDone
+                                    ? TextDecoration.lineThrough
+                                    : TextDecoration.none,
+                              ),
+                          child: Text(task.title),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          '${formatTime(task.startTime)}–${formatTime(task.endTime)}'
+                          '${task.endsNextDay ? ' · следующий день' : ''}',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            height: 1.4,
+                            color: appMuted,
+                          ),
+                        ),
+                        if (task.endsNextDay)
+                          Text(
+                            'Начало ${formatDayMonth(task.startsAt)}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: appMuted,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    "${task.startTime.hour.toString().padLeft(2, '0')}:${task.startTime.minute.toString().padLeft(2, '0')} - "
-                        "${task.endTime.hour.toString().padLeft(2, '0')}:${task.endTime.minute.toString().padLeft(2, '0')}",
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
+                  _menu(task),
                 ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

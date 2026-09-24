@@ -6,27 +6,26 @@ part 'tasks.g.dart';
 @HiveType(typeId: 0)
 class Task extends HiveObject {
   @HiveField(0)
-  String title;
+  final String title;
 
   @HiveField(1)
-  bool isDone;
+  final bool isDone;
 
   @HiveField(2)
-  DateTime date;
+  final DateTime date;
 
   @HiveField(3)
-  int startHour;
+  final int startHour;
 
   @HiveField(4)
-  int startMinute;
+  final int startMinute;
 
   @HiveField(5)
-  int endHour;
+  final int endHour;
 
   @HiveField(6)
-  int endMinute;
+  final int endMinute;
 
-  // ✅ ОСНОВНОЙ (Hive будет использовать его)
   Task({
     required this.title,
     this.isDone = false,
@@ -37,7 +36,6 @@ class Task extends HiveObject {
     required this.endMinute,
   });
 
-  // ✅ ОСТАВЛЯЕМ для UI (ничего не ломаем)
   factory Task.fromTime({
     required String title,
     required DateTime date,
@@ -56,10 +54,31 @@ class Task extends HiveObject {
     );
   }
 
-  // UI геттеры
-  TimeOfDay get startTime =>
-      TimeOfDay(hour: startHour, minute: startMinute);
+  TimeOfDay get startTime => TimeOfDay(hour: startHour, minute: startMinute);
 
-  TimeOfDay get endTime =>
-      TimeOfDay(hour: endHour, minute: endMinute);
+  TimeOfDay get endTime => TimeOfDay(hour: endHour, minute: endMinute);
+
+  int get startMinutes => startHour * 60 + startMinute;
+  int get endMinutes => endHour * 60 + endMinute;
+  bool get endsNextDay => endMinutes < startMinutes;
+
+  DateTime get startsAt =>
+      DateTime(date.year, date.month, date.day, startHour, startMinute);
+  DateTime get endsAt => DateTime(
+    date.year,
+    date.month,
+    date.day + (endsNextDay ? 1 : 0),
+    endHour,
+    endMinute,
+  );
+
+  Task copyWith({bool? isDone}) => Task(
+    title: title.trim(),
+    isDone: isDone ?? this.isDone,
+    date: DateTime(date.year, date.month, date.day),
+    startHour: startHour,
+    startMinute: startMinute,
+    endHour: endHour,
+    endMinute: endMinute,
+  );
 }
